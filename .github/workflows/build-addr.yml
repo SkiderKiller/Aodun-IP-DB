@@ -1,0 +1,141 @@
+name: 构建 .addr
+
+on:
+  schedule:
+    # 每天 03:17 UTC（北京时间 11:17）查一次上游
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '上游 SHA256 没变也强制重新生成'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-addr
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install --quiet maxminddb
+
+      - name: 检查上游 SHA256
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: python scripts/check_upstream.py
+
+      - name: 下载并校验上游包
+        if: steps.check.outputs.changed == 'true'
+        env:
+          URL: ${{ steps.check.outputs.url }}
+          SHA256: ${{ steps.check.outputs.sha256 }}
+        run: |
+          curl -fsSL --retry 3 -o geolite2-city-ipv4.csv.7z "$URL"
+          echo "${SHA256}  geolite2-city-ipv4.csv.7z" | sha256sum -c -
+          7z x -y geolite2-city-ipv4.csv.7z > /dev/null
+          ls -lh geolite2-city-ipv4.csv
+
+      - name: 生成 .addr
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          mkdir -p dist
+          python convert_geolite2_to_addr.py \
+            --csv geolite2-city-ipv4.csv \
+            --name-map-addr namemap/all-ip-location-2026-03-17.addr \
+            --output dist/all-ip-location.addr
+
+      - name: 校验产物
+        if: steps.check.outputs.changed == 'true'
+        id: verify
+        run: python scripts/verify_addr.py dist/all-ip-location.addr
+
+      - name: 发布 Release
+        if: steps.check.outputs.changed == 'true'
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA256: ${{ steps.check.outputs.sha256 }}
+          UPSTREAM_PUBLISHED: ${{ steps.check.outputs.upstream_published }}
+          LINES: ${{ steps.verify.outputs.lines }}
+          CN_LINES: ${{ steps.verify.outputs.cn_lines }}
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          TAG="v${DATE}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            TAG="v${DATE}-${SHA256:0:7}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          cd dist
+          sha256sum all-ip-location.addr > all-ip-location.addr.sha256
+          cd ..
+
+          cat > notes.md <<EOF
+          由 [sapics/ip-location-db](https://github.com/sapics/ip-location-db) 的
+          \`geolite2-city-ipv4.csv.7z\` 自动转换生成。
+
+          | 项目 | 值 |
+          | --- | --- |
+          | 上游发布时间 | ${UPSTREAM_PUBLISHED} |
+          | 上游 SHA256 | \`${SHA256}\` |
+          | 总行数 | ${LINES} |
+          | 中国大陆行数 | ${CN_LINES} |
+
+          固定下载地址（始终指向最新一版）：
+
+          \`\`\`
+          https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/all-ip-location.addr
+          \`\`\`
+
+          格式：\`起始IP|结束IP|0|0|洲|国家|省份|\`，UTF-8 无 BOM，LF 换行。
+
+          数据来源 GeoLite2，遵循 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)。
+          EOF
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "all-ip-location ${DATE}" \
+            --notes-file notes.md \
+            dist/all-ip-location.addr \
+            dist/all-ip-location.addr.sha256
+
+      - name: 记录上游 SHA256
+        if: steps.check.outputs.changed == 'true'
+        env:
+          SHA256: ${{ steps.check.outputs.sha256 }}
+          UPSTREAM_PUBLISHED: ${{ steps.check.outputs.upstream_published }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          mkdir -p state
+          cat > state/upstream.json <<EOF
+          {
+            "asset": "geolite2-city-ipv4.csv.7z",
+            "sha256": "${SHA256}",
+            "upstream_published": "${UPSTREAM_PUBLISHED}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "release_tag": "${TAG}"
+          }
+          EOF
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add state/upstream.json
+          git commit -m "chore: 上游更新至 ${SHA256:0:12}（${TAG}）" || exit 0
+          git push
+
+      - name: 上游没变化
+        if: steps.check.outputs.changed != 'true'
+        run: echo "上游 SHA256 未变，跳过构建。"
