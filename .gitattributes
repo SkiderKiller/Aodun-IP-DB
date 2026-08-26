@@ -1,0 +1,3 @@
+# 仓库内一律 LF：.addr 的换行符是傲盾导入格式的一部分
+* text=auto eol=lf
+*.addr text eol=lf
