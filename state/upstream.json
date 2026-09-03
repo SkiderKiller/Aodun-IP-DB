@@ -1,7 +1,7 @@
 {
   "asset": "geolite2-city-ipv4.csv.7z",
-  "sha256": "45f1f98dddfb08cf1dc1fbbe9f9d4bab499fe60291225ff9430049406324f50a",
+  "sha256": "22e5270b09c177a53f0d0e1e72b0d1b9ebc00557e8654f85bc7d4ab40f201144",
   "upstream_published": "2026-06-13T17:17:15Z",
-  "built_at": "2026-08-30T09:12:10Z",
-  "release_tag": "v2026-08-30"
+  "built_at": "2026-09-03T08:01:36Z",
+  "release_tag": "v2026-09-03"
 }
